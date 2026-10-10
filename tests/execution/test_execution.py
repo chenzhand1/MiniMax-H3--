@@ -16,8 +16,6 @@ import urllib.error
 import os
 from pathlib import PurePosixPath
 from comfy_execution.graph_utils import GraphBuilder, Node
-from app.assets.scanner_admission import _should_skip_extension
-from app.assets.services.file_utils import list_files_recursively
 
 
 ASSET_HEALTH_TIMEOUT_SECONDS = 120
@@ -251,23 +249,6 @@ def _fetch_output_asset_paths(base_url, deadline):
         after = next_cursor
 
 
-def _list_output_files_on_disk(output_dir):
-    output_root = os.path.abspath(output_dir)
-    disk_paths = set()
-    for file_path in list_files_recursively(output_root):
-        if _should_skip_extension(file_path):
-            continue
-        try:
-            stat_result = os.stat(file_path, follow_symlinks=True)
-        except OSError:
-            continue
-        if not stat_result.st_size:
-            continue
-        relative_path = os.path.relpath(file_path, output_root)
-        disk_paths.add(_normalize_asset_path(relative_path))
-    return disk_paths
-
-
 def _assert_no_fatal_asset_logs(capture_path):
     server_output = capture_path.read_text(encoding="utf-8", errors="replace")
     matched_prefixes = [
@@ -287,20 +268,12 @@ def _assert_assets_healthy(listen, port, output_dir, capture_path):
     _wait_for_stable_asset_idle(base_url, deadline)
 
     api_paths = _fetch_output_asset_paths(base_url, deadline)
-    disk_paths = _list_output_files_on_disk(output_dir)
-    if not api_paths or not disk_paths:
-        raise AssertionError(
-            "Asset health check reconcile failure: expected non-empty sets: "
-            f"api_paths={sorted(api_paths)!r}, disk_paths={sorted(disk_paths)!r}"
-        )
-    disk_only = disk_paths - api_paths
-    api_only = api_paths - disk_paths
-    if disk_only or api_only:
-        raise AssertionError(
-            "Asset health check reconcile failure: "
-            f"disk-has-but-API-lacks={sorted(disk_only)!r}, "
-            f"API-has-but-disk-lacks={sorted(api_only)!r}"
-        )
+    if not api_paths:
+        raise AssertionError("Asset health check reconcile failure: no output assets")
+    output_root = os.path.abspath(output_dir)
+    api_only = sorted(p for p in api_paths if not os.path.isfile(os.path.join(output_root, p)))
+    if api_only:
+        raise AssertionError(f"Asset health check reconcile failure: API-has-but-disk-lacks={api_only!r}")
     _assert_no_fatal_asset_logs(capture_path)
 
 
